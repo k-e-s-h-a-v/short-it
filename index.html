@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>No-DB URL Shortener (Grammar Encoding Demo)</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            background: #0f172a;
+            color: #e5e7eb;
+            display: flex;
+            justify-content: center;
+            padding: 40px;
+        }
+
+        .card {
+            background: #020617;
+            width: 720px;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+        }
+
+        h1 {
+            font-size: 22px;
+            margin-bottom: 12px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 90px;
+            resize: vertical;
+            background: #020617;
+            color: #e5e7eb;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px;
+            font-size: 15px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            background: #2563eb;
+            color: white;
+        }
+
+        button.secondary {
+            background: #334155;
+        }
+
+        .stats {
+            margin-top: 10px;
+            font-size: 13px;
+            color: #94a3b8;
+        }
+
+        .footer {
+            margin-top: 16px;
+            font-size: 12px;
+            color: #64748b;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>No-DB URL Shortener (Grammar Encoding)</h1>
+
+        <textarea id="input" placeholder="Paste URL or token here..."></textarea>
+
+        <div class="row">
+            <button id="encodeBtn">Encode</button>
+            <button class="secondary" id="decodeBtn">Decode</button>
+        </div>
+
+        <div class="stats" id="stats"></div>
+
+        <div class="footer">
+            Dictionary + prefix stripping demo (Brotli comes later in Node).
+        </div>
+    </div>
+
+    <script type="module">
+        /* ---------------- Dictionaries ---------------- */
+        import {
+            compressSync,
+            decompressSync
+        } from "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js";
+
+
+        async function compress(str) {
+            return compressSync(new TextEncoder().encode(str))
+        }
+
+        async function decompress(bytes) {
+            return new TextDecoder().decode(decompressSync(bytes));
+        }
+
+        const PREFIX_DICT = [
+            ["https://", "0"],
+            ["http://", "1"],
+            ["www.", "2"]
+        ];
+
+        const SUBSTRING_DICT = [
+            [".com", "A"],
+            [".org", "B"],
+            [".net", "C"],
+            [".in", "D"],
+            ["utm_source", "E"],
+            ["utm_medium", "F"],
+            ["utm_campaign", "G"]
+        ];
+
+        /* ---------------- Helpers ---------------- */
+
+        function applyDict(str, dict) {
+            for (const [from, to] of dict) {
+                str = str.split(from).join(to);
+            }
+            return str;
+        }
+
+        function reverseDict(str, dict) {
+            for (const [from, to] of [...dict].reverse()) {
+                str = str.split(to).join(from);
+            }
+            return str;
+        }
+
+        /* ---------------- Base62 ---------------- */
+
+        const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+        function base62Encode(bytes) {
+            let num = BigInt("0x" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join(""));
+            let out = "";
+            while (num > 0n) {
+                out = ALPHABET[num % 62n] + out;
+                num /= 62n;
+            }
+            return out || "0";
+        }
+
+        function base62Decode(str) {
+            let num = 0n;
+            for (const c of str) {
+                num = num * 62n + BigInt(ALPHABET.indexOf(c));
+            }
+            let hex = num.toString(16);
+            if (hex.length % 2) hex = "0" + hex;
+
+            const bytes = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < hex.length; i += 2) {
+                bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+            }
+            return bytes;
+        }
+
+        /* ---------------- Brotli ---------------- */
+
+
+
+        function concatChunks(chunks) {
+            let total = 0;
+            for (const c of chunks) total += c.length;
+            const out = new Uint8Array(total);
+            let offset = 0;
+            for (const c of chunks) {
+                out.set(c, offset);
+                offset += c.length;
+            }
+            return out;
+        }
+
+        /* ---------------- Encode / Decode ---------------- */
+
+        async function encode() {
+            const input = document.getElementById("input");
+            const original = input.value.trim();
+            if (!original) return;
+
+            let s = original;
+            s = applyDict(s, PREFIX_DICT);
+            s = applyDict(s, SUBSTRING_DICT);
+
+            const compressed = await compress(s);
+            const encoded = base62Encode(compressed);
+
+            input.value = encoded;
+            showStats(original.length, encoded.length);
+        }
+
+        async function decode() {
+            const input = document.getElementById("input");
+            const token = input.value.trim();
+            if (!token) return;
+
+            const bytes = base62Decode(token);
+            let s = await decompress(bytes);
+
+            s = reverseDict(s, SUBSTRING_DICT);
+            s = reverseDict(s, PREFIX_DICT);
+
+            input.value = s;
+            document.getElementById("stats").innerText = "";
+        }
+
+        function showStats(before, after) {
+            const pct = ((before - after) / before * 100).toFixed(1);
+            document.getElementById("stats").innerText =
+                `Original: ${before} chars | Encoded: ${after} chars | Saved: ${pct}%`;
+        }
+        document.getElementById("encodeBtn").addEventListener("click", encode);
+        document.getElementById("decodeBtn").addEventListener("click", decode);
+    </script>
+
+</body>
+
+</html>
